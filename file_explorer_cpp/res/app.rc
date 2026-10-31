@@ -1,0 +1,24 @@
+#include <windows.h>
+1 ICON "file_explorer.ico"
+CREATEPROCESS_MANIFEST_RESOURCE_ID RT_MANIFEST "app.manifest"
+VS_VERSION_INFO VERSIONINFO
+FILEVERSION 3,4,0,0
+PRODUCTVERSION 3,4,0,0
+FILEOS 0x40004
+FILETYPE 1
+BEGIN
+  BLOCK "StringFileInfo"
+  BEGIN
+    BLOCK "040904B0"
+    BEGIN
+      VALUE "FileDescription", "File Explorer"
+      VALUE "ProductName", "File Explorer"
+      VALUE "FileVersion", "3.4"
+      VALUE "OriginalFilename", "FileExplorer.exe"
+    END
+  END
+  BLOCK "VarFileInfo"
+  BEGIN
+    VALUE "Translation", 0x409, 1200
+  END
+END
