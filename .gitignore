@@ -1,0 +1,29 @@
+# Personal data — never commit
+data/
+window_manager.log
+.launcher-links/
+*.enc
+
+# Your favourites, tags, tabs and log — never commit
+file_explorer.json
+file_explorer.json.tmp
+file_explorer.log
+folder_icons/
+
+# Build
+file_explorer.ico
+__pycache__/
+build/
+dist/
+*.spec
+
+
+# Python / build
+__pycache__/
+*.pyc
+build/
+dist/
+*.spec
+
+# Build output
+window_manager.ico
