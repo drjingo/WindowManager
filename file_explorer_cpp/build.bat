@@ -11,7 +11,7 @@ where g++ >nul 2>nul || (
 )
 if not exist build mkdir build
 set FLAGS=-std=c++17 -O2 -municode -Wall -Wno-unused-parameter -Wno-missing-field-initializers
-set LIBS=-lshlwapi -lshell32 -lole32 -luuid -lgdiplus -lmsimg32 -ldwmapi -luxtheme -lcomctl32 -loleaut32 -lgdi32
+set LIBS=-lshlwapi -lshell32 -lole32 -luuid -lgdiplus -lmsimg32 -ldwmapi -luxtheme -lcomctl32 -loleaut32 -lcomdlg32 -lgdi32
 
 for %%f in (util theme gfx fs ui fileview chrome app app_actions panes quicklook dialogs transfer everything main) do (
   echo compiling %%f.cpp

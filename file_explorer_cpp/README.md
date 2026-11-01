@@ -29,7 +29,11 @@ All the Python version's features are included:
 - Tabs and tab sets
 - Breadcrumbs with folder menus
 - Favourites, Recent folders and Tags (each sidebar section folds: click its header)
-- Coloured folders, optionally applied in Windows Explorer too
+- Coloured folders (right-click a folder → *Folder colour*), optionally applied in Windows Explorer too:
+  - 20 deep, saturated colours, a custom colour (Windows' colour picker), or a **gradient**: 10 ready-made ones
+    (*Sunset*, *Ocean*, *Aurora* …) or any two colours (*More colours, custom, gradients…*, with a live preview)
+  - **Same colour for all subfolders**: every folder inside gets it too, unless it has its own colour
+  - **Default folder colour** for all other folders (right-click empty space), also any colour or gradient
 - List, Grid and Columns views
 - Filtering, and search through subfolders (`*.pdf size:>1mb modified:this week` …)
 - Folder sizes
@@ -41,8 +45,6 @@ All the Python version's features are included:
 - Preview panel (Alt+P or the toolbar button). It sits on the right, follows the selection and can be resized by dragging its edge.
 - A progress window for copy / move, showing speed and time left, with Pause, Skip file and Cancel. If a name is already
   taken it asks Replace (Merge for folders) / Keep both / Skip, optionally for all. Progress also shows on the taskbar button.
-- Mica background on Windows 11 22H2+ (on by default; switch it in the Colours menu). The tab bar, toolbar, sidebar
-  and status bar show the blurred desktop tinted with the theme. The file list stays solid so it is easy to read.
 - Single instance: starting it again, or opening a folder with it, adds a tab to the window that is already open
 - Bulk rename with a live preview and Ctrl+Z undo
 - Zip and extract (built-in `tar.exe`, or 7-Zip if installed)

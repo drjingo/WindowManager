@@ -139,135 +139,22 @@ HBITMAP menu_bitmap(const Bitmap& b) {
 // ======================================================================
 // painting
 // ======================================================================
-static bool under_mica(HWND h) { return g_mica_root && (h == g_mica_root || GetAncestor(h, GA_ROOT) == g_mica_root); }
-
 Paint::Paint(HWND h) : hwnd(h) {
     wdc = BeginPaint(hwnd, &ps);
     GetClientRect(hwnd, &rc);
     dc = CreateCompatibleDC(wdc);
-    if (under_mica(hwnd)) {  // a 32-bit buffer, so the alpha can be set before it goes on screen
-        BITMAPINFO bi{};
-        bi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
-        bi.bmiHeader.biWidth = std::max(1L, rc.right);
-        bi.bmiHeader.biHeight = -std::max(1L, rc.bottom);
-        bi.bmiHeader.biPlanes = 1;
-        bi.bmiHeader.biBitCount = 32;
-        void* p = nullptr;
-        bmp = CreateDIBSection(wdc, &bi, DIB_RGB_COLORS, &p, nullptr, 0);
-        bits = (uint32_t*)p;
-    } else bmp = CreateCompatibleBitmap(wdc, std::max(1L, rc.right), std::max(1L, rc.bottom));
+    bmp = CreateCompatibleBitmap(wdc, std::max(1L, rc.right), std::max(1L, rc.bottom));
     old = (HBITMAP)SelectObject(dc, bmp);
     SetBkMode(dc, TRANSPARENT);
 }
 
 Paint::~Paint() {
-    if (bits) {
-        GdiFlush();
-        glass_fix(bits, std::max(1L, rc.right), std::max(1L, rc.bottom), glass);
-    }
     BitBlt(wdc, 0, 0, rc.right, rc.bottom, dc, 0, 0, SRCCOPY);
     SelectObject(dc, old);
     DeleteObject(bmp);
     DeleteDC(dc);
     EndPaint(hwnd, &ps);
 }
-
-// ======================================================================
-// Mica
-// ======================================================================
-static DWORD win_build() {
-    static DWORD b = [] {
-        OSVERSIONINFOW v{sizeof v};
-        using RtlGetVersion = LONG(WINAPI*)(OSVERSIONINFOW*);
-        auto rgv = (RtlGetVersion)(void*)GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "RtlGetVersion");
-        if (rgv) rgv(&v);
-        return v.dwBuildNumber;
-    }();
-    return b;
-}
-
-bool mica_supported() { return win_build() >= 22621; }  // Windows 11 22H2 (DWMWA_SYSTEMBACKDROP_TYPE)
-
-bool set_mica(HWND top, bool on) {
-    bool ok = false;
-    if (mica_supported()) {
-        int type = on ? 2 /*DWMSBT_MAINWINDOW (Mica)*/ : 1 /*DWMSBT_NONE*/;
-        ok = SUCCEEDED(DwmSetWindowAttribute(top, 38 /*DWMWA_SYSTEMBACKDROP_TYPE*/, &type, sizeof type)) && on;
-        MARGINS m = ok ? MARGINS{-1, -1, -1, -1} : MARGINS{0, 0, 0, 0};
-        DwmExtendFrameIntoClientArea(top, &m);
-    }
-    g_mica_root = ok ? top : nullptr;
-    style_window(top);
-    RedrawWindow(top, nullptr, nullptr, RDW_INVALIDATE | RDW_ALLCHILDREN | RDW_FRAME | RDW_ERASE);
-    return ok;
-}
-
-// GDI leaves the alpha at 0. Everything becomes solid, except the "glass" colour, which becomes a see-through tint of
-// itself (so the theme's colour stays, with the blurred desktop under it). Pixels close to that colour (the soft edges
-// of text and shapes) fade between the two, so there are no hard fringes.
-void glass_fix(uint32_t* px, int w, int h, COLORREF glass) {
-    size_t n = (size_t)w * h;
-    if (glass == CLR_INVALID) {
-        for (size_t i = 0; i < n; i++) px[i] |= 0xFF000000u;
-        return;
-    }
-    const int A = T.light ? 150 : 125;  // how much of the theme colour covers the Mica
-    int gr = GetRValue(glass), gg = GetGValue(glass), gb = GetBValue(glass);
-    for (size_t i = 0; i < n; i++) {
-        uint32_t p = px[i];
-        int r = (p >> 16) & 255, g = (p >> 8) & 255, b = p & 255;
-        int d = std::max({std::abs(r - gr), std::abs(g - gg), std::abs(b - gb)});
-        if (d >= 40) { px[i] = p | 0xFF000000u; continue; }
-        int a = A + (255 - A) * d / 40;
-        px[i] = ((uint32_t)a << 24) | ((uint32_t)(r * a / 255) << 16) | ((uint32_t)(g * a / 255) << 8) | (uint32_t)(b * a / 255);
-    }
-}
-
-// Edit boxes draw themselves with GDI (alpha 0, which Mica would show through): paint them into a buffer instead,
-// make it solid, and repaint after anything that changes what they show.
-static LRESULT CALLBACK solid_edit_proc(HWND h, UINT m, WPARAM w, LPARAM l, UINT_PTR, DWORD_PTR) {
-    if (!under_mica(h)) return DefSubclassProc(h, m, w, l);
-    switch (m) {
-        case WM_PAINT: {
-            // let it paint as usual (cue banner, selection, everything), then read it back and make it solid
-            LRESULT r = DefSubclassProc(h, m, w, l);
-            RECT rc;
-            GetClientRect(h, &rc);
-            if (rc.right <= 0 || rc.bottom <= 0) return r;
-            HDC wdc = GetDC(h);
-            BITMAPINFO bi{};
-            bi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
-            bi.bmiHeader.biWidth = rc.right;
-            bi.bmiHeader.biHeight = -rc.bottom;
-            bi.bmiHeader.biPlanes = 1;
-            bi.bmiHeader.biBitCount = 32;
-            void* p = nullptr;
-            HDC dc = CreateCompatibleDC(wdc);
-            HBITMAP bmp = CreateDIBSection(wdc, &bi, DIB_RGB_COLORS, &p, nullptr, 0);
-            HGDIOBJ old = SelectObject(dc, bmp);
-            BitBlt(dc, 0, 0, rc.right, rc.bottom, wdc, 0, 0, SRCCOPY);
-            GdiFlush();
-            glass_fix((uint32_t*)p, rc.right, rc.bottom, CLR_INVALID);
-            BitBlt(wdc, 0, 0, rc.right, rc.bottom, dc, 0, 0, SRCCOPY);
-            SelectObject(dc, old);
-            DeleteObject(bmp);
-            DeleteDC(dc);
-            ReleaseDC(h, wdc);
-            return r;
-        }
-        case WM_CHAR: case WM_KEYDOWN: case WM_LBUTTONDOWN: case WM_LBUTTONUP: case WM_LBUTTONDBLCLK: case WM_MOUSEMOVE:
-        case WM_SETTEXT: case EM_SETSEL: case EM_REPLACESEL: case WM_PASTE: case WM_CUT: case WM_CLEAR: case WM_UNDO:
-        case WM_SETFOCUS: case WM_KILLFOCUS: {
-            LRESULT r = DefSubclassProc(h, m, w, l);
-            if (m != WM_MOUSEMOVE || (w & MK_LBUTTON)) InvalidateRect(h, nullptr, FALSE);
-            return r;
-        }
-        case WM_NCDESTROY: RemoveWindowSubclass(h, solid_edit_proc, 9); break;
-    }
-    return DefSubclassProc(h, m, w, l);
-}
-
-void solid_edit(HWND edit) { SetWindowSubclass(edit, solid_edit_proc, 9, 0); }
 
 void fill(HDC dc, const RECT& r, COLORREF c) {
     SetDCBrushColor(dc, c);
@@ -491,17 +378,26 @@ BitmapPtr to_bitmap(const std::vector<uint8_t>& rgba, int size) {
 const std::vector<std::pair<float, float>> TAB = {{0.06f, 0.20f}, {0.06f, 0.17f}, {0.09f, 0.13f}, {0.35f, 0.13f},
                                                   {0.39f, 0.15f}, {0.45f, 0.22f}, {0.45f, 0.33f}, {0.06f, 0.33f}};
 
-bool folder_shade(RGBAf base, float x, float y, int size, bool paper, RGBAf& out) {
+// A folder in deep, saturated colours. c1 → c2 is a diagonal gradient (the same colour twice = a plain folder).
+bool folder_shade(RGBAf c1, RGBAf c2, float x, float y, int size, bool paper, RGBAf& out) {
     RGBAf white{255, 255, 255, 1};
-    RGBAf dark{base.r * 0.7f, base.g * 0.7f, base.b * 0.7f, 1};
-    RGBAf light = lerp(base, white, 0.22f);
+    RGBAf base = lerp(c1, c2, (x - 0.05f) / 0.9f * 0.6f + (y - 0.13f) / 0.73f * 0.4f);
+    RGBAf dark{base.r * 0.66f, base.g * 0.66f, base.b * 0.66f, 1};
+    RGBAf deep{base.r * 0.88f, base.g * 0.88f, base.b * 0.88f, 1};
+    RGBAf light = lerp(base, white, 0.10f);
     if (in_rrect(x, y, 0.05f, 0.36f, 0.95f, 0.86f, 0.075f)) {
-        out = y < 0.36f + 1.4f / size ? lerp(light, white, 0.35f) : lerp(light, base, (y - 0.36f) / 0.42f);
+        out = y < 0.36f + 1.4f / size ? lerp(light, white, 0.30f) : lerp(light, deep, (y - 0.36f) / 0.5f);
         return true;
     }
     if (paper && in_rrect(x, y, 0.12f, 0.26f, 0.88f, 0.70f, 0.03f)) { out = {244, 245, 250, 1}; return true; }
     if (in_rrect(x, y, 0.05f, 0.20f, 0.95f, 0.84f, 0.07f) || in_poly(x, y, TAB)) { out = dark; return true; }
     return false;
+}
+
+std::vector<uint8_t> folder_rgba(const std::string& spec, int size) {
+    RGBAf c1 = rgbf(folder_rgb(spec)), c2 = rgbf(folder_rgb2(spec));
+    int ss = size <= 48 ? 4 : size <= 128 ? 2 : 1;
+    return render(size, [&](float x, float y, RGBAf& o) { return folder_shade(c1, c2, x, y, size, size >= 24, o); }, ss);
 }
 
 std::map<std::pair<std::string, int>, BitmapPtr> g_folders;
@@ -512,10 +408,7 @@ BitmapPtr folder_bitmap(const std::string& color, int size) {
     auto key = std::make_pair(color, size);
     auto it = g_folders.find(key);
     if (it != g_folders.end()) return it->second;
-    RGBAf base = rgbf(folder_rgb(color));
-    int ss = size <= 48 ? 4 : size <= 128 ? 2 : 1;
-    auto rgba = render(size, [&](float x, float y, RGBAf& o) { return folder_shade(base, x, y, size, size >= 24, o); }, ss);
-    return g_folders[key] = to_bitmap(rgba, size);
+    return g_folders[key] = to_bitmap(folder_rgba(color, size), size);
 }
 
 std::vector<uint8_t> app_icon_rgba(int size) {
@@ -611,11 +504,22 @@ static std::string ico_from(const std::vector<int>& sizes, const std::function<s
 std::string make_ico_file() { return ico_from({16, 20, 24, 32, 40, 48, 64, 96, 128, 256}, app_icon_rgba); }
 
 std::string make_folder_ico(const std::string& color) {
-    RGBAf base = rgbf(folder_rgb(color));
-    return ico_from({16, 24, 32, 48, 64, 128, 256}, [&](int size) {
-        int ss = size <= 48 ? 4 : size <= 128 ? 2 : 1;
-        return render(size, [&](float x, float y, RGBAf& o) { return folder_shade(base, x, y, size, size >= 24, o); }, ss);
-    });
+    return ico_from({16, 24, 32, 48, 64, 128, 256}, [&](int size) { return folder_rgba(color, size); });
+}
+
+BitmapPtr gradient_dot(const std::string& spec, int size) {
+    if (!is_gradient(spec)) return tag_dot(folder_rgb(spec), size);
+    static std::map<std::pair<std::string, int>, BitmapPtr> cache;
+    auto key = std::make_pair(spec, size);
+    if (auto it = cache.find(key); it != cache.end()) return it->second;
+    RGBAf c1 = rgbf(folder_rgb(spec)), c2 = rgbf(folder_rgb2(spec));
+    auto rgba = render(size, [&](float x, float y, RGBAf& o) {
+        float d = std::sqrt((x - 0.5f) * (x - 0.5f) + (y - 0.5f) * (y - 0.5f));
+        if (d > 0.5f) return false;
+        o = lerp(c1, c2, x * 0.6f + y * 0.4f);
+        return true;
+    }, 4);
+    return cache[key] = to_bitmap(rgba, size);
 }
 
 BitmapPtr tag_dot(COLORREF c, int size) {

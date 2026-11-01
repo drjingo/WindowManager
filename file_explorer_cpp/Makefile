@@ -4,7 +4,7 @@ CROSS ?=
 CXX = $(CROSS)g++
 WINDRES = $(CROSS)windres
 CXXFLAGS = -std=c++17 -O2 -municode -Wall -Wno-unused-parameter -Wno-missing-field-initializers
-LIBS = -lshlwapi -lshell32 -lole32 -luuid -lgdiplus -lmsimg32 -ldwmapi -luxtheme -lcomctl32 -loleaut32 -lgdi32
+LIBS = -lshlwapi -lshell32 -lole32 -luuid -lgdiplus -lmsimg32 -ldwmapi -luxtheme -lcomctl32 -loleaut32 -lcomdlg32 -lgdi32
 SRC = $(wildcard src/*.cpp)
 OBJ = $(patsubst src/%.cpp,build/%.o,$(SRC))
 

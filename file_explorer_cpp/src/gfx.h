@@ -33,16 +33,9 @@ struct Paint {  // double-buffered WM_PAINT
     HDC wdc, dc;
     HBITMAP bmp, old;
     RECT rc;
-    uint32_t* bits = nullptr;
-    COLORREF glass = CLR_INVALID;  // with Mica: this colour becomes see-through (the rest stays solid)
     explicit Paint(HWND h);
     ~Paint();
 };
-// ---- Mica (Windows 11 22H2+): the window's background shows the desktop, softly blurred
-bool mica_supported();
-bool set_mica(HWND top, bool on);        // false if Windows can't
-void glass_fix(uint32_t* bits, int w, int h, COLORREF glass);  // after GDI drawing: set the alpha
-void solid_edit(HWND edit);              // native edit boxes: paint them solid under Mica
 void fill(HDC dc, const RECT& r, COLORREF c);
 void fill_round(HDC dc, const RECT& r, int radius, COLORREF c);
 void frame_round(HDC dc, const RECT& r, int radius, COLORREF c, float width = 1.0f);
@@ -61,6 +54,7 @@ HICON make_hicon(int size);
 std::string make_ico_file();                                    // the app icon: .ico bytes (16 … 256)
 std::string make_folder_ico(const std::string& color);          // a coloured folder as .ico (Windows Explorer)
 BitmapPtr tag_dot(COLORREF c, int size);                        // cached
+BitmapPtr gradient_dot(const std::string& spec, int size);     // a colour dot; gradients shown as such (cached)
 void clear_art_cache();                                         // after a theme change
 
 // ---- Windows file icons (system image lists) and thumbnails

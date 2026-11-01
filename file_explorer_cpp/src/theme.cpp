@@ -60,54 +60,98 @@ const Def DEFS[] = {
      0.78, 0.50},
 };
 
-double g_fs = 0.82, g_fl = 0.64;
-std::map<std::string, COLORREF> g_folder;
+// Folder & tag colours: deep, saturated ("dense") colours that read well on every theme.
+const std::pair<const char*, const char*> PALETTE[] = {
+    {"yellow", "#F5B800"}, {"amber", "#F08C00"},  {"orange", "#F2620F"}, {"red", "#E02424"},
+    {"rose", "#E11D58"},   {"pink", "#E62E9C"},   {"magenta", "#C21FC9"}, {"purple", "#8B2BE2"},
+    {"violet", "#6D35F0"}, {"indigo", "#4338E8"}, {"blue", "#1F5FE8"},   {"sky", "#0A8FE0"},
+    {"cyan", "#00AFC8"},   {"teal", "#0A9688"},   {"emerald", "#0BA567"}, {"green", "#2E9E28"},
+    {"lime", "#6DB80F"},   {"brown", "#8C5226"},  {"grey", "#64748B"},   {"black", "#2A2E37"},
+};
 
-COLORREF hls(double h, double l, double s) {
-    auto f = [](double p, double q, double t) {
-        if (t < 0) t += 1;
-        if (t > 1) t -= 1;
-        if (t < 1.0 / 6) return p + (q - p) * 6 * t;
-        if (t < 0.5) return q;
-        if (t < 2.0 / 3) return p + (q - p) * (2.0 / 3 - t) * 6;
-        return p;
-    };
-    double q = l < 0.5 ? l * (1 + s) : l + s - l * s, p = 2 * l - q;
-    return RGB((int)std::lround(f(p, q, h + 1.0 / 3) * 255), (int)std::lround(f(p, q, h) * 255),
-               (int)std::lround(f(p, q, h - 1.0 / 3) * 255));
+bool parse_hex(const std::string& s, COLORREF& out) {
+    if (s.size() != 7 || s[0] != '#') return false;
+    for (size_t i = 1; i < 7; i++) if (!isxdigit((unsigned char)s[i])) return false;
+    out = hex(s.c_str());
+    return true;
 }
 
-void make_folder_palette() {
-    const std::pair<const char*, double> hues[] = {{"red", 0},     {"orange", 26},  {"yellow", 45},
-                                                   {"green", 118}, {"teal", 174},   {"blue", 214},
-                                                   {"purple", 266}, {"pink", 318}};
-    g_folder.clear();
-    for (auto& h : hues) {
-        double s = g_fs, l = g_fl;
-        std::string n = h.first;
-        if (n == "yellow") l -= 0.06;
-        else if (n == "red") { s = std::min(1.0, s + 0.1); l -= 0.05; }
-        else if (n == "pink") l += 0.04;
-        else if (n == "green" || n == "teal") { s *= 0.72; l -= 0.04; }
-        else if (n == "orange") { s = std::min(1.0, s + 0.08); l -= 0.03; }
-        g_folder[n] = hls(h.second / 360.0, std::max(0.25, std::min(0.85, l)), s);
+bool one_color(const std::string& s, COLORREF& out) {
+    for (auto& p : PALETTE)
+        if (s == p.first) { out = hex(p.second); return true; }
+    return parse_hex(s, out);
+}
+
+std::vector<std::string> parts_of(const std::string& spec) {
+    std::vector<std::string> r;
+    size_t a = 0;
+    for (;;) {
+        size_t b = spec.find('>', a);
+        r.push_back(spec.substr(a, b == std::string::npos ? std::string::npos : b - a));
+        if (b == std::string::npos) break;
+        a = b + 1;
     }
-    g_folder["grey"] = T.faint;
+    return r;
 }
 }  // namespace
 
-const std::vector<std::string> FOLDER_COLOR_NAMES = {"yellow", "blue", "red", "orange", "green",
-                                                     "teal",   "purple", "pink", "grey"};
+const std::vector<std::string> FOLDER_COLOR_NAMES = [] {
+    std::vector<std::string> v;
+    for (auto& p : PALETTE) v.push_back(p.first);
+    return v;
+}();
 
-COLORREF folder_rgb(const std::string& name) {
-    auto it = g_folder.find(name);
-    return it != g_folder.end() ? it->second : g_folder["yellow"];
+const std::vector<std::pair<wstr, std::string>> GRADIENT_PRESETS = {
+    {L"Sunset", "amber>rose"},   {L"Fire", "yellow>red"},      {L"Berry", "pink>violet"},
+    {L"Ocean", "cyan>indigo"},   {L"Sky", "sky>purple"},       {L"Forest", "lime>teal"},
+    {L"Aurora", "emerald>blue"}, {L"Peach", "orange>pink"},    {L"Night", "indigo>black"},
+    {L"Grape", "magenta>indigo"},
+};
+
+bool is_folder_color(const std::string& spec) {
+    auto parts = parts_of(spec);
+    if (parts.size() > 2) return false;
+    COLORREF c;
+    for (auto& p : parts) if (!one_color(p, c)) return false;
+    return true;
 }
 
-bool is_folder_color(const std::string& name) {
-    for (auto& n : FOLDER_COLOR_NAMES)
-        if (n == name) return true;
-    return false;
+bool is_gradient(const std::string& spec) { return parts_of(spec).size() == 2; }
+
+COLORREF folder_rgb(const std::string& spec) {
+    COLORREF c = hex(PALETTE[0].second);
+    one_color(parts_of(spec)[0], c);
+    return c;
+}
+
+COLORREF folder_rgb2(const std::string& spec) {
+    auto parts = parts_of(spec);
+    COLORREF c = folder_rgb(spec);
+    if (parts.size() == 2) one_color(parts[1], c);
+    return c;
+}
+
+wstr color_label(const std::string& spec) {
+    for (auto& g : GRADIENT_PRESETS) if (g.second == spec) return g.first;
+    wstr r;
+    for (auto& p : parts_of(spec)) {
+        wstr w = wide(p);
+        if (!w.empty() && w[0] != L'#') w[0] = towupper(w[0]);
+        r += (r.empty() ? L"" : L" → ") + w;
+    }
+    return r;
+}
+
+std::string color_file_key(const std::string& spec) {
+    std::string r;
+    for (char c : spec) r += c == '>' ? '-' : c == '#' ? 'x' : c;
+    return r;
+}
+
+std::string hex_of(COLORREF c) {
+    char b[8];
+    snprintf(b, sizeof b, "#%02X%02X%02X", GetRValue(c), GetGValue(c), GetBValue(c));
+    return b;
 }
 
 const std::vector<wstr>& theme_names() {
@@ -141,9 +185,6 @@ Theme theme_by_name(const wstr& name) {
 
 void set_theme(const wstr& name) {
     T = theme_by_name(name);
-    for (auto& d : DEFS)
-        if (T.name == d.name) { g_fs = d.fs; g_fl = d.fl; }
-    make_folder_palette();
 }
 
 // ======================================================================
@@ -270,13 +311,10 @@ wstr glyph(Glyph g) {
 // ======================================================================
 // window chrome
 // ======================================================================
-HWND g_mica_root = nullptr;
-
 void style_window(HWND hwnd) {
     BOOL dark = !T.light;
     DwmSetWindowAttribute(hwnd, 20 /*DWMWA_USE_IMMERSIVE_DARK_MODE*/, &dark, sizeof dark);
     COLORREF cap = T.panel, text = T.fg, border = T.panel;
-    if (hwnd == g_mica_root) cap = text = border = 0xFFFFFFFF;  // DWMWA_COLOR_DEFAULT: Mica shows in the title bar
     DwmSetWindowAttribute(hwnd, 35 /*DWMWA_CAPTION_COLOR*/, &cap, sizeof cap);      // Windows 11
     DwmSetWindowAttribute(hwnd, 36 /*DWMWA_TEXT_COLOR*/, &text, sizeof text);
     DwmSetWindowAttribute(hwnd, 34 /*DWMWA_BORDER_COLOR*/, &border, sizeof border);

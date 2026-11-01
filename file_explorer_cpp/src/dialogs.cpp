@@ -1,5 +1,6 @@
 #include "dialogs.h"
 #include <algorithm>
+#include <commdlg.h>
 
 namespace {
 
@@ -46,32 +47,98 @@ class Chips : public Control {
     int hot_ = -1;
 };
 
-// colour dots for a tag
+// colour dots to pick from (they wrap into rows); gradients show as gradient dots. With allow_custom, a last "+" dot
+// opens Windows' colour picker, and then shows the colour picked.
 class Swatches : public Control {
   public:
+    std::vector<std::string> specs = FOLDER_COLOR_NAMES;
     std::string color;
+    bool allow_custom = false, enabled = true;
+    std::function<void()> changed;
+    static int dot() { return S(26); }
+    static int step() { return S(34); }
+    int count() const { return (int)specs.size() + (allow_custom ? 1 : 0); }
+    int height_for(int w) const {
+        int per = std::max(1, (w - S(4)) / step());
+        return ((count() + per - 1) / per) * step();
+    }
+    bool is_custom() const {
+        return !color.empty() && std::find(specs.begin(), specs.end(), color) == specs.end();
+    }
     void on_paint(HDC dc, const RECT& rc) override {
         fill(dc, rc, T.bg);
-        int d = S(26), gap = S(10);
+        int d = dot(), st = step(), per = std::max(1, (int)(rc.right - S(4)) / st);
         rects_.clear();
-        for (size_t i = 0; i < FOLDER_COLOR_NAMES.size(); i++) {
-            int x = (int)i * (d + gap) + S(4);
-            RECT r{x, (rc.bottom - d) / 2, x + d, (rc.bottom + d) / 2};
+        for (int i = 0; i < count(); i++) {
+            int x = (i % per) * st + S(4), y = (i / per) * st + (st - d) / 2;
+            RECT r{x, y, x + d, y + d};
             rects_.push_back(r);
             float cx = r.left + d / 2.0f, cy = r.top + d / 2.0f;
-            bool on = FOLDER_COLOR_NAMES[i] == color;
+            bool custom_slot = i == (int)specs.size();
+            bool on = custom_slot ? is_custom() : specs[i] == color;
             if (on) fill_circle(dc, cx, cy, d / 2.0f + S(3), T.bg, T.fg, (float)S(2));
-            fill_circle(dc, cx, cy, d / 2.0f - (on ? S(1) : 0), folder_rgb(FOLDER_COLOR_NAMES[i]));
+            int dd = d - (on ? S(2) : 0), off = (d - dd) / 2;
+            if (custom_slot && !is_custom()) {
+                fill_circle(dc, cx, cy, d / 2.0f, T.field, T.border, (float)S(1));
+                text(dc, L"+", r, T.muted, F.ui_bold, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+            } else {
+                gradient_dot(custom_slot ? color : specs[i], dd)->draw(dc, r.left + off, r.top + off, -1, -1, enabled ? 255 : 90);
+            }
         }
     }
-    void on_lbutton_down(int x, int y, WPARAM) override {
-        for (size_t i = 0; i < rects_.size(); i++)
-            if (PtInRect(&rects_[i], POINT{x, y})) { color = FOLDER_COLOR_NAMES[i]; invalidate(); if (changed) changed(); }
+    void on_mouse_move(int x, int y, WPARAM) override {
+        bool hit = false;
+        for (auto& r : rects_) if (PtInRect(&r, POINT{x, y})) hit = true;
+        SetCursor(LoadCursor(nullptr, hit && enabled ? IDC_HAND : IDC_ARROW));
     }
-    std::function<void()> changed;
+    void on_lbutton_down(int x, int y, WPARAM) override {
+        if (!enabled) return;
+        for (size_t i = 0; i < rects_.size(); i++) {
+            if (!PtInRect(&rects_[i], POINT{x, y})) continue;
+            if (i == specs.size()) {
+                if (!pick_custom()) return;
+            } else color = specs[i];
+            invalidate();
+            if (changed) changed();
+            return;
+        }
+    }
+    bool pick_custom() {
+        static COLORREF custom[16] = {};
+        CHOOSECOLORW cc{};
+        cc.lStructSize = sizeof cc;
+        cc.hwndOwner = GetAncestor(hwnd, GA_ROOT);
+        cc.rgbResult = color.empty() ? folder_rgb("blue") : folder_rgb(color);
+        cc.lpCustColors = custom;
+        cc.Flags = CC_RGBINIT | CC_FULLOPEN;
+        if (!ChooseColorW(&cc)) return false;
+        color = hex_of(cc.rgbResult);
+        return true;
+    }
 
   private:
     std::vector<RECT> rects_;
+};
+
+// a big folder in a colour, to see the result before saving
+class FolderPreview : public Control {
+  public:
+    std::string spec;
+    void on_paint(HDC dc, const RECT& rc) override {
+        fill(dc, rc, T.bg);
+        int n = std::min((int)rc.bottom, S(80));
+        folder_bitmap(spec, n)->draw(dc, (rc.right - n) / 2, 0);
+        RECT t{0, n, rc.right, rc.bottom};
+        text(dc, color_label(spec), t, T.muted, F.small, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
+    }
+};
+
+struct ColorDialog : Dialog {
+    Label l_color, l_to, l_presets;
+    Swatches first, second, presets;
+    Check gradient, subfolders;
+    FolderPreview preview;
+    Button ok, cancel;
 };
 
 struct TagDialog : Dialog {
@@ -219,7 +286,7 @@ void label(Label& l, HWND parent, const wstr& t, HFONT f = nullptr, COLORREF c =
 // ======================================================================
 bool tag_dialog(HWND owner, const wstr& title, wstr& name, std::string& color) {
     TagDialog d;
-    int w = S(440), h = S(230);
+    int w = S(480), h = S(272);
     RECT wr{0, 0, w, h};
     AdjustWindowRectEx(&wr, WS_CAPTION | WS_SYSMENU, FALSE, WS_EX_DLGMODALFRAME);
     d.create_top(owner, title, WS_CAPTION | WS_SYSMENU | WS_POPUP, WS_EX_DLGMODALFRAME, 0, 0, wr.right - wr.left, wr.bottom - wr.top);
@@ -232,8 +299,9 @@ bool tag_dialog(HWND owner, const wstr& title, wstr& name, std::string& color) {
     label(d.l_color, d.hwnd, L"Colour", F.small);
     d.l_color.move(S(18), S(82), w - S(36), S(22));
     d.sw.create(d.hwnd);
-    d.sw.color = is_folder_color(color) ? color : FOLDER_COLOR_NAMES[0];
-    d.sw.move(S(18), S(106), w - S(36), S(40));
+    d.sw.allow_custom = true;
+    d.sw.color = is_folder_color(color) && !is_gradient(color) ? color : FOLDER_COLOR_NAMES[0];
+    d.sw.move(S(18), S(104), w - S(36), d.sw.height_for(w - S(36)));
     d.ok.create(d.hwnd);
     d.ok.label = L"Save";
     d.ok.primary = true;
@@ -252,6 +320,115 @@ bool tag_dialog(HWND owner, const wstr& title, wstr& name, std::string& color) {
     d.run(owner);
     bool ok = d.result == 1;
     if (ok) { name = trim(d.box.get()); color = d.sw.color; }
+    DestroyWindow(d.hwnd);
+    return ok;
+}
+
+// ======================================================================
+bool folder_color_dialog(HWND owner, const wstr& title, std::string& spec, bool* subfolders) {
+    ColorDialog d;
+    int L = S(18), w = S(560), fw = w - 2 * L;
+    std::string a = "yellow", b = "red";
+    if (is_folder_color(spec)) {
+        size_t gt = spec.find('>');
+        a = gt == std::string::npos ? spec : spec.substr(0, gt);
+        if (gt != std::string::npos) b = spec.substr(gt + 1);
+    }
+    d.create_top(owner, title, WS_CAPTION | WS_SYSMENU | WS_POPUP, WS_EX_DLGMODALFRAME, 0, 0, 100, 100);
+    d.first.create(d.hwnd);
+    d.first.allow_custom = true;
+    d.first.color = a;
+    d.second.create(d.hwnd);
+    d.second.allow_custom = true;
+    d.second.color = b;
+    d.presets.create(d.hwnd);
+    d.presets.specs.clear();
+    for (auto& g : GRADIENT_PRESETS) d.presets.specs.push_back(g.second);
+    d.presets.color = is_gradient(spec) ? spec : "";
+    d.gradient.create(d.hwnd);
+    d.gradient.label = L"Gradient (two colours)";
+    d.gradient.checked = is_gradient(spec);
+    label(d.l_color, d.hwnd, L"Colour", F.small);
+    label(d.l_to, d.hwnd, L"Gradient to", F.small);
+    label(d.l_presets, d.hwnd, L"Ready-made gradients", F.small);
+    d.preview.create(d.hwnd);
+    if (subfolders) {
+        d.subfolders.create(d.hwnd);
+        d.subfolders.label = L"Same colour for all subfolders (unless they have their own)";
+        d.subfolders.checked = *subfolders;
+    }
+    d.ok.create(d.hwnd);
+    d.ok.label = L"Apply";
+    d.ok.primary = true;
+    d.cancel.create(d.hwnd);
+    d.cancel.label = L"Cancel";
+
+    int pw = S(120), sw = fw - pw - S(12), y = S(12);
+    int h1 = d.first.height_for(sw);
+    d.l_color.move(L, y, sw, S(22));
+    d.preview.move(L + sw + S(12), y + S(22), pw, S(100));
+    y += S(24);
+    d.first.move(L, y, sw, h1);
+    y += h1 + S(10);
+    d.gradient.move(L, y, d.gradient.ideal_width(), S(26));
+    y += S(34);
+    d.l_to.move(L, y, sw, S(22));
+    y += S(24);
+    d.second.move(L, y, sw, d.second.height_for(sw));
+    y += d.second.height_for(sw) + S(10);
+    d.l_presets.move(L, y, fw, S(22));
+    y += S(24);
+    d.presets.move(L, y, fw, d.presets.height_for(fw));
+    y += d.presets.height_for(fw) + S(10);
+    if (subfolders) {
+        d.subfolders.move(L, y, d.subfolders.ideal_width(), S(26));
+        y += S(38);
+    }
+    y += S(6);
+    d.cancel.move(w - L - S(96), y, S(96), S(34));
+    d.ok.move(w - L - S(96) * 2 - S(8), y, S(96), S(34));
+    int h = y + S(34) + S(16);
+    RECT wr{0, 0, w, h};
+    AdjustWindowRectEx(&wr, WS_CAPTION | WS_SYSMENU, FALSE, WS_EX_DLGMODALFRAME);
+    SetWindowPos(d.hwnd, nullptr, 0, 0, wr.right - wr.left, wr.bottom - wr.top, SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
+    center_on(d.hwnd, owner);
+
+    auto result = [&] {
+        return d.gradient.checked && d.second.color != d.first.color ? d.first.color + ">" + d.second.color : d.first.color;
+    };
+    auto update = [&] {
+        d.second.enabled = d.gradient.checked;
+        d.l_to.set(L"Gradient to", d.gradient.checked ? CLR_INVALID : T.faint);
+        d.presets.color = d.gradient.checked ? result() : "";
+        d.preview.spec = result();
+        for (Control* c : std::initializer_list<Control*>{&d.second, &d.presets, &d.preview}) c->invalidate();
+    };
+    d.first.changed = update;
+    d.second.changed = [&] {
+        if (!d.gradient.checked) d.gradient.checked = true, d.gradient.invalidate();
+        update();
+    };
+    d.gradient.changed = update;
+    d.presets.changed = [&] {
+        std::string g = d.presets.color;
+        size_t gt = g.find('>');
+        d.first.color = g.substr(0, gt);
+        d.second.color = g.substr(gt + 1);
+        d.gradient.checked = true;
+        d.first.invalidate();
+        d.gradient.invalidate();
+        update();
+    };
+    update();
+    d.ok.click = [&] { d.finish(1); };
+    d.enter = [&] { d.finish(1); };
+    d.cancel.click = [&] { d.finish(0); };
+    d.run(owner);
+    bool ok = d.result == 1;
+    if (ok) {
+        spec = result();
+        if (subfolders) *subfolders = d.subfolders.checked;
+    }
     DestroyWindow(d.hwnd);
     return ok;
 }

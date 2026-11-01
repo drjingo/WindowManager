@@ -101,7 +101,6 @@ LRESULT Control::on_message(UINT m, WPARAM w, LPARAM l) {
         case WM_PAINT: {
             Paint p(hwnd);
             on_paint(p.dc, p.rc);
-            p.glass = glass_color();
             return 0;
         }
         case WM_ERASEBKGND: return 1;
@@ -459,7 +458,6 @@ bool TextBox::create_in(HWND parent, bool) {
     SendMessageW(edit, EM_SETMARGINS, EC_LEFTMARGIN | EC_RIGHTMARGIN, MAKELPARAM(0, 0));
     if (!hint.empty()) SendMessageW(edit, EM_SETCUEBANNER, FALSE, (LPARAM)hint.c_str());
     SetWindowSubclass(edit, edit_sub, 1, (DWORD_PTR)this);
-    solid_edit(edit);
     return true;
 }
 

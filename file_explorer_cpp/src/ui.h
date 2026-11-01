@@ -18,7 +18,6 @@ class Control {
 
     virtual LRESULT on_message(UINT m, WPARAM w, LPARAM l);
     virtual void on_paint(HDC dc, const RECT& rc) {}
-    virtual COLORREF glass_color() const { return CLR_INVALID; }  // see-through under Mica (CLR_INVALID: solid)
     virtual void on_size(int w, int h) {}
     virtual void on_mouse_move(int x, int y, WPARAM keys) {}
     virtual void on_mouse_leave() {}
@@ -165,7 +164,6 @@ class TextBox : public Control {
     void on_size(int w, int h) override;
     void on_lbutton_down(int, int, WPARAM) override { focus(); }
     LRESULT on_message(UINT m, WPARAM w, LPARAM l) override;
-    COLORREF glass_color() const override { return T.bg; }
     bool quiet = false;
 };
 

@@ -20,7 +20,7 @@ struct Fav { wstr name, path; };
 struct TagDef { wstr name; std::string color; };
 struct Visit { wstr path; double n = 0, t = 0; };
 struct TabSet { wstr name; std::vector<std::pair<wstr, int>> tabs; int active = 0; };
-struct ColorRec { wstr path; std::string color; };
+struct ColorRec { wstr path; std::string color; bool sub = false; };  // sub: subfolders get it too
 struct TagRec { wstr path; std::vector<wstr> tags; };
 struct SearchState {
     int token = -1, found = 0, dirs = 0;
@@ -56,6 +56,8 @@ class App : public Control, public FileViewHost, public QLSource {
     std::vector<TagDef> tag_defs;
     std::map<wstr, TagRec> file_tags;      // norm path →
     std::map<wstr, ColorRec> folder_colors;
+    int colors_with_sub = 0;  // how many have sub (0: no need to look at parent folders)
+    void count_color_subs();
     std::string default_folder_color = "yellow";
     bool color_in_explorer = false, show_hidden = false, calc_sizes = true;
     std::string sort_key = "name";
@@ -67,8 +69,7 @@ class App : public Control, public FileViewHost, public QLSource {
     int sidebar_w = 230;
     std::set<wstr> collapsed;
     bool preview_open = false;
-    bool mica = true;
-    bool use_everything = true;  // search with voidtools Everything when it is running  // Windows 11 Mica background (when Windows has it)
+    bool use_everything = true;  // search with voidtools Everything when it is running
     int preview_w = 340;  // at 96 dpi  // sidebar sections you folded ("TAGS" …)
     bool pane2_open = false;
     wstr pane2_saved_path;
@@ -109,8 +110,6 @@ class App : public Control, public FileViewHost, public QLSource {
     LRESULT on_message(UINT m, WPARAM w, LPARAM l) override;
     void on_size(int w, int h) override;
     void on_paint(HDC dc, const RECT& rc) override;
-    COLORREF glass_color() const override { return T.bg; }
-    void toggle_mica();
     void on_close() override;
     void on_mouse_move(int x, int y, WPARAM keys) override;
     void on_lbutton_down(int x, int y, WPARAM keys) override;
@@ -186,9 +185,12 @@ class App : public Control, public FileViewHost, public QLSource {
     void delete_tag(int i);
     void tags_changed();
     std::string folder_color(const wstr& p);
+    bool inherits_color(const wstr& p);  // gets a parent folder's colour
     void color_menu(Menu& m, const std::vector<wstr>& paths);
     void default_color_menu(Menu& m);
-    void set_folder_color(const std::vector<wstr>& paths, const std::string& color);
+    void set_folder_color(const std::vector<wstr>& paths, const std::string& color, int sub = -1);  // sub -1: keep
+    void set_color_subfolders(const std::vector<wstr>& paths, bool on);
+    void folder_color_more(const std::vector<wstr>& paths);
     void toggle_color_in_explorer();
     void colors_changed();
 

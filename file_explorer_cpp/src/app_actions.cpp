@@ -273,60 +273,135 @@ void App::tags_changed() {
 // ======================================================================
 // folder colours
 // ======================================================================
+void App::count_color_subs() {
+    colors_with_sub = 0;
+    for (auto& [k, v] : folder_colors) if (v.sub) colors_with_sub++;
+}
+
+bool App::inherits_color(const wstr& p) {
+    if (!colors_with_sub) return false;
+    wstr k = norm(p);
+    for (size_t cut = k.rfind(L'\\'); cut != wstr::npos && cut > 0; cut = k.rfind(L'\\', cut - 1)) {
+        auto it = folder_colors.find(k.substr(0, cut));
+        if (it != folder_colors.end() && it->second.sub) return true;
+    }
+    return false;
+}
+
+// its own colour; else the colour of the nearest parent folder that gives its colour to its subfolders; else the default
 std::string App::folder_color(const wstr& p) {
-    auto it = folder_colors.find(norm(p));
-    return it != folder_colors.end() ? it->second.color : default_folder_color;
+    wstr k = norm(p);
+    auto it = folder_colors.find(k);
+    if (it != folder_colors.end()) return it->second.color;
+    if (colors_with_sub)
+        for (size_t cut = k.rfind(L'\\'); cut != wstr::npos && cut > 0; cut = k.rfind(L'\\', cut - 1)) {
+            auto pit = folder_colors.find(k.substr(0, cut));
+            if (pit != folder_colors.end() && pit->second.sub) return pit->second.color;
+        }
+    return default_folder_color;
 }
 
 void App::color_menu(Menu& m, const std::vector<wstr>& paths) {
     std::set<std::string> cur_colors;
+    int own = 0, subs = 0;
     for (auto& p : paths) {
         auto it = folder_colors.find(norm(p));
         cur_colors.insert(it != folder_colors.end() ? it->second.color : "");
+        if (it != folder_colors.end()) { own++; if (it->second.sub) subs++; }
     }
-    m.item(L"Default (" + wide(default_folder_color) + L")", [this, paths] { set_folder_color(paths, ""); }, true,
-           cur_colors.size() == 1 && cur_colors.count(""));
+    std::string cur = cur_colors.size() == 1 ? *cur_colors.begin() : "-";
+    // no colour of its own: it shows its parent's (when that one gives it to subfolders) or the default
+    std::string base = paths.size() == 1 && cur.empty() ? folder_color(paths[0]) : default_folder_color;
+    wstr base_label = base != default_folder_color || (paths.size() == 1 && cur.empty() && inherits_color(paths[0]))
+                          ? L"Same as parent folder (" + color_label(base) + L")"
+                          : L"Default (" + color_label(default_folder_color) + L")";
+    m.item(base_label, [this, paths] { set_folder_color(paths, ""); }, true, cur.empty(),
+           menu_bitmap(*gradient_dot(base, S(12))));
     m.sep();
     for (auto& c : FOLDER_COLOR_NAMES) {
-        wstr label = wide(c);
-        label[0] = towupper(label[0]);
         std::string col = c;
-        m.item(label, [this, paths, col] { set_folder_color(paths, col); }, true,
-               cur_colors.size() == 1 && cur_colors.count(c), menu_bitmap(*tag_dot(folder_rgb(c), S(12))));
+        m.item(color_label(c), [this, paths, col] { set_folder_color(paths, col); }, true, cur == c,
+               menu_bitmap(*gradient_dot(c, S(12))));
     }
+    Menu gm(m, 0);
+    for (auto& [name, spec] : GRADIENT_PRESETS) {
+        std::string sp = spec;
+        gm.item(name + L"  (" + color_label(spec.substr(0, spec.find('>'))) + L" → " +
+                    color_label(spec.substr(spec.find('>') + 1)) + L")",
+                [this, paths, sp] { set_folder_color(paths, sp); }, true, cur == spec, menu_bitmap(*gradient_dot(spec, S(12))));
+    }
+    m.sub(L"Gradients", gm);
+    m.item(L"More colours, custom, gradients…", [this, paths] { folder_color_more(paths); });
     m.sep();
+    bool all_sub = own == (int)paths.size() && subs == own;
+    m.item(L"Same colour for all subfolders", [this, paths, all_sub] { set_color_subfolders(paths, !all_sub); },
+           own == (int)paths.size(), all_sub);
     m.item(L"Show colours in Windows Explorer too", [this] { toggle_color_in_explorer(); }, true, color_in_explorer);
 }
 
-void App::default_color_menu(Menu& m) {
-    for (auto& c : FOLDER_COLOR_NAMES) {
-        wstr label = wide(c);
-        label[0] = towupper(label[0]);
-        std::string col = c;
-        m.item(label, [this, col] {
-            default_folder_color = col;
-            colors_changed();
-            say(L"Folders are " + wide(col) + L" now (folders you coloured keep their colour).", 6);
-        }, true, c == default_folder_color, menu_bitmap(*tag_dot(folder_rgb(c), S(12))));
-    }
+void App::folder_color_more(const std::vector<wstr>& paths) {
+    std::string spec = folder_color(paths[0]);
+    auto it = folder_colors.find(norm(paths[0]));
+    bool sub = it != folder_colors.end() && it->second.sub;
+    wstr title = paths.size() == 1 ? L"Colour of " + display_name(paths[0]) : fmt(L"Colour of %d folders", (int)paths.size());
+    if (folder_color_dialog(hwnd, title, spec, &sub)) set_folder_color(paths, spec, sub ? 1 : 0);
 }
 
-void App::set_folder_color(const std::vector<wstr>& paths, const std::string& color) {
+void App::default_color_menu(Menu& m) {
+    auto set_default = [this](const std::string& col) {
+        default_folder_color = col;
+        colors_changed();
+        say(L"Folders are " + color_label(col) + L" now (folders you coloured keep their colour).", 6);
+    };
+    for (auto& c : FOLDER_COLOR_NAMES) {
+        std::string col = c;
+        m.item(color_label(c), [set_default, col] { set_default(col); }, true, c == default_folder_color,
+               menu_bitmap(*gradient_dot(c, S(12))));
+    }
+    Menu gm(m, 0);
+    for (auto& [name, spec] : GRADIENT_PRESETS) {
+        std::string sp = spec;
+        gm.item(name, [set_default, sp] { set_default(sp); }, true, sp == default_folder_color,
+                menu_bitmap(*gradient_dot(spec, S(12))));
+    }
+    m.sub(L"Gradients", gm);
+    m.item(L"More colours, custom, gradients…", [this, set_default] {
+        std::string spec = default_folder_color;
+        if (folder_color_dialog(hwnd, L"Default folder colour", spec, nullptr)) set_default(spec);
+    });
+}
+
+void App::set_folder_color(const std::vector<wstr>& paths, const std::string& color, int sub) {
     std::vector<wstr> errors;
     for (auto& p : paths) {
+        auto it = folder_colors.find(norm(p));
+        bool keep_sub = it != folder_colors.end() && it->second.sub;
         if (color.empty()) folder_colors.erase(norm(p));
-        else folder_colors[norm(p)] = {clean_path(p), color};
+        else folder_colors[norm(p)] = {clean_path(p), color, sub < 0 ? keep_sub : sub == 1};
         if (color_in_explorer) {
             wstr err;
             if (!set_explorer_folder_color(p, color, color.empty() ? "" : make_folder_ico(color), err))
                 errors.push_back(display_name(p) + L": " + err);
         }
     }
+    count_color_subs();
     colors_changed();
     wstr what = paths.size() == 1 ? display_name(paths[0]) : fmt(L"%d folders", (int)paths.size());
+    bool subs = !color.empty() && folder_colors.count(norm(paths[0])) && folder_colors[norm(paths[0])].sub;
     if (!errors.empty()) say(L"Couldn't change it in Windows Explorer: " + errors[0], 8);
-    else say(what + L": " + (color.empty() ? L"default colour" : wide(color)) +
+    else say(what + L": " + (color.empty() ? L"default colour" : color_label(color)) +
+             (subs ? L", subfolders too" : L"") +
              (color_in_explorer ? L" — Windows Explorer may take a moment to show it" : L""), 8);
+}
+
+void App::set_color_subfolders(const std::vector<wstr>& paths, bool on) {
+    for (auto& p : paths) {
+        auto it = folder_colors.find(norm(p));
+        if (it != folder_colors.end()) it->second.sub = on;
+    }
+    count_color_subs();
+    colors_changed();
+    say(on ? L"Subfolders get the same colour now (unless they have their own)." : L"Subfolders use their own / the default colour again.", 6);
 }
 
 void App::toggle_color_in_explorer() {
@@ -519,6 +594,7 @@ void App::remap_paths(const std::vector<std::pair<wstr, wstr>>& pairs) {
             }
         };
         remap_map(folder_colors);
+        count_color_subs();
         remap_map(file_tags);
         remap_map(visits);
         for (auto& f : favorites) {
@@ -842,23 +918,12 @@ void App::theme_menu() {
         wstr n = name;
         m.item(name, [this, n] { set_app_theme(n); }, true, name == theme_name, menu_bitmap(sw));
     }
-    m.sep();
-    if (mica_supported())
-        m.item(L"Mica background (Windows 11)", [this] { toggle_mica(); }, true, mica && g_mica_root == hwnd);
-    else m.item(L"Mica background (needs Windows 11 22H2)", [] {}, false);
     RECT r = toolbar.button_rect(Toolbar::B_THEME);
     POINT p{r.right, r.bottom};
     ClientToScreen(toolbar.hwnd, &p);
     m.show(hwnd, p, true);
 }
 
-void App::toggle_mica() {
-    mica = !mica;
-    bool ok = set_mica(hwnd, mica);
-    if (mica && !ok) say(L"Windows didn't allow the Mica background here.", 6);
-    else say(mica ? L"Mica background on" : L"Mica background off", 3);
-    save_state();
-}
 
 void App::set_app_theme(const wstr& name) {
     if (name == theme_name) return;

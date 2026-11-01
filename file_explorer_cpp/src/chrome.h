@@ -6,7 +6,6 @@ class App;
 
 class TabBar : public Control {
   public:
-    COLORREF glass_color() const override { return T.panel; }
     App* app = nullptr;
     ~TabBar() override;
     void init(App* a, HWND parent);
@@ -33,7 +32,6 @@ class TabBar : public Control {
 
 class Breadcrumb : public Control {
   public:
-    COLORREF glass_color() const override { return T.bg; }
     std::function<void(const wstr&)> navigate;
     std::function<void()> escape;
     std::function<void(const wstr&)> middle;
@@ -78,7 +76,6 @@ class SearchBox : public TextBox {
 
 class Toolbar : public Control {
   public:
-    COLORREF glass_color() const override { return T.bg; }
     enum Btn { B_BACK, B_FWD, B_UP, B_REFRESH, B_STAR, B_LIST, B_GRID, B_COLUMNS, B_DUAL, B_PREVIEW, B_THEME, B_COUNT };
     App* app = nullptr;
     Breadcrumb crumb;
@@ -104,7 +101,6 @@ class Toolbar : public Control {
 
 class Sidebar : public Control {
   public:
-    COLORREF glass_color() const override { return T.panel; }
     App* app = nullptr;
     ~Sidebar() override;
     void init(App* a, HWND parent);
@@ -142,7 +138,6 @@ class Sidebar : public Control {
 
 class StatusBar : public Control {
   public:
-    COLORREF glass_color() const override { return T.panel; }
     wstr text_;
     bool message_ = false;
     void set(const wstr& t, bool message = false) { text_ = t; message_ = message; invalidate(); }

@@ -20,10 +20,17 @@ Theme theme_by_name(const wstr& name);
 COLORREF mix(COLORREF a, COLORREF b, double t);
 COLORREF hex(const char* s);
 
-// folder & tag colours: clearly different hues, tinted for the theme
-extern const std::vector<std::string> FOLDER_COLOR_NAMES;
-COLORREF folder_rgb(const std::string& name);
-bool is_folder_color(const std::string& name);
+// folder & tag colours. A colour "spec" is a palette name ("blue"), a custom colour ("#1F5FE8"), or a gradient of
+// two of them ("amber>rose").
+extern const std::vector<std::string> FOLDER_COLOR_NAMES;                  // the palette, in display order
+extern const std::vector<std::pair<wstr, std::string>> GRADIENT_PRESETS;   // name, spec
+COLORREF folder_rgb(const std::string& spec);   // the (first) colour
+COLORREF folder_rgb2(const std::string& spec);  // the gradient's second colour (or the same)
+bool is_folder_color(const std::string& spec);
+bool is_gradient(const std::string& spec);
+wstr color_label(const std::string& spec);      // "Blue", "Sunset", "Amber → Rose", "#1F5FE8"
+std::string color_file_key(const std::string& spec);  // safe in a file name
+std::string hex_of(COLORREF c);
 
 // ---- DPI + fonts
 struct Fonts {
@@ -45,7 +52,6 @@ enum Glyph { G_BACK, G_FWD, G_UP, G_REFRESH, G_STAR, G_STAR_FILLED, G_LIST, G_GR
 wstr glyph(Glyph g);
 
 // window chrome
-extern HWND g_mica_root;              // the window that has the Mica background (or null)
 void style_window(HWND hwnd);          // dark / light title bar + caption colour
 void use_dark_menus(bool dark);        // popup menus follow the theme (Windows 10 1903+)
 void set_control_theme(HWND hwnd);     // scrollbars etc. of standard controls

@@ -866,7 +866,6 @@ void FileView::start_rename(int i) {
                             nullptr, GetModuleHandleW(nullptr), nullptr);
     SendMessageW(edit_, WM_SETFONT, (WPARAM)(mode == VM_GRID ? F.small : F.ui), TRUE);
     SetWindowSubclass(edit_, fv_edit_proc, 2, (DWORD_PTR)this);
-    solid_edit(edit_);
     wstr stem, ext;
     if (items[i]->dir) stem = items[i]->name;
     else split_ext(items[i]->name, stem, ext);

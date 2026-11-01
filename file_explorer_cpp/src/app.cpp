@@ -106,7 +106,6 @@ bool App::start(const wstr& start_path) {
         center_on(hwnd, GetDesktopWindow());
     }
     style_window(hwnd);
-    if (mica) set_mica(hwnd, true);
     HICON big = (HICON)LoadImageW(GetModuleHandleW(nullptr), MAKEINTRESOURCEW(1), IMAGE_ICON, 32, 32, 0);
     HICON small = (HICON)LoadImageW(GetModuleHandleW(nullptr), MAKEINTRESOURCEW(1), IMAGE_ICON, 16, 16, 0);
     SendMessageW(hwnd, WM_SETICON, ICON_BIG, (LPARAM)(big ? big : make_hicon(32)));
@@ -176,7 +175,9 @@ void App::load_state() {
     for (int s : GRID_SIZES) if (s == gs) grid_size = gs;
     if (auto fc = st.get("folder_colors"); fc && fc->is_obj())
         for (auto& [k, x] : fc->o)
-            if (is_folder_color(utf8(x.gstr("color")))) folder_colors[norm(x.gstr("path"))] = {x.gstr("path"), utf8(x.gstr("color"))};
+            if (is_folder_color(utf8(x.gstr("color"))))
+                folder_colors[norm(x.gstr("path"))] = {x.gstr("path"), utf8(x.gstr("color")), x.gbool("subfolders")};
+    count_color_subs();
     std::string dc = utf8(st.gstr("default_folder_color", L"yellow"));
     if (is_folder_color(dc)) default_folder_color = dc;
     color_in_explorer = st.gbool("color_in_explorer");
@@ -220,7 +221,6 @@ void App::load_state() {
     if (!set_ok) current_set.clear();
     sidebar_w = std::max(150, std::min(600, (int)st.gnum("sidebar", 230)));
     preview_open = st.gbool("preview");
-    mica = st.gbool("mica", true);
     use_everything = st.gbool("everything", true);
     preview_w = std::max(200, std::min(900, (int)st.gnum("preview_w", 340)));
     collapsed.clear();
@@ -284,6 +284,7 @@ void App::save_state() {
         Json o = Json::object();
         o.set("path", Json::string(v.path));
         o.set("color", Json::string(wide(v.color)));
+        if (v.sub) o.set("subfolders", Json::boolean(true));
         fc.set(utf8(k), o);
     }
     st.set("folder_colors", fc);
@@ -337,7 +338,6 @@ void App::save_state() {
     st.set("current_set", Json::string(current_set));
     st.set("sidebar", Json::number(sidebar_w));
     st.set("preview", Json::boolean(preview_open));
-    st.set("mica", Json::boolean(mica));
     st.set("everything", Json::boolean(use_everything));
     st.set("preview_w", Json::number(preview_w));
     {

@@ -1239,7 +1239,7 @@ bool set_explorer_folder_color(const wstr& folder, const std::string& color, con
     wstr ini = path_join(folder, L"desktop.ini"), ico;
     if (!color.empty()) {
         CreateDirectoryW(folder_icons_dir().c_str(), nullptr);
-        ico = path_join(folder_icons_dir(), wide(color) + L".ico");
+        ico = path_join(folder_icons_dir(), wide(color_file_key(color)) + L".ico");
         if (!write_file_atomic(ico, ico_data)) { error = L"can't write the icon"; return false; }
     }
     wstr text = exists(ini) ? read_ini_text(ini) : L"";
