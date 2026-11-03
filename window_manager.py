@@ -100,7 +100,7 @@ def set_data_dir(path):
 
 
 set_data_dir(os.path.join(APP_DIR, "data"))
-VERSION = "v32"
+VERSION = "v33"
 
 # Dark command-palette theme
 T = {
@@ -759,7 +759,7 @@ def migrate_old_data():
 
 
 WINDOW_SCAN_MS = 1000
-SESSION_SAVE_MS = 30000
+SESSION_SAVE_MS = 10000
 
 
 def log(text):
@@ -1015,13 +1015,38 @@ def clean_ws_item(d):
     if not d.get(need):
         return None
     item = {k: d[k] for k in ("type", "name", "app_id", "path", "exe", "args", "url", "profile") if k in d}
-    place = d.get("place") if isinstance(d.get("place"), dict) else {}
-    pos = place.get("pos") if place.get("pos") in dict(WS_POSITIONS) else "none"
-    rect = place.get("rect") if isinstance(place.get("rect"), list) and len(place.get("rect")) == 4 else None
-    item["place"] = {"pos": pos if pos != "saved" or rect else "none",
-                     "monitor": place.get("monitor") if isinstance(place.get("monitor"), int) else 0,
-                     "rect": rect}
+    if isinstance(d.get("win_exe"), str) and d["win_exe"]:
+        item["win_exe"] = d["win_exe"].lower()
+    item["place"] = clean_place(d.get("place"))
+    more = [clean_place(x) for x in d.get("more", []) if isinstance(x, dict)] if isinstance(d.get("more"), list) else []
+    more = [x for x in more if x["pos"] != "none"][:8]
+    if more:
+        item["more"] = more  # the same app had more windows open: where each of them was
     return item
+
+
+def _int_rect(r):
+    if isinstance(r, list) and len(r) == 4 and all(isinstance(v, (int, float)) for v in r):
+        return [int(v) for v in r]
+    return None
+
+
+def clean_place(place):
+    """Where a workspace / session window goes: pos, monitor, visible rect; for windows remembered exactly also
+    "outer" (the window's own normal rectangle, as Windows stores it) and "min" (it was minimized)."""
+    place = place if isinstance(place, dict) else {}
+    pos = place.get("pos") if place.get("pos") in dict(WS_POSITIONS) else "none"
+    rect, outer = _int_rect(place.get("rect")), _int_rect(place.get("outer"))
+    if outer and (outer[2] < 40 or outer[3] < 30):
+        outer = None
+    out = {"pos": pos if pos != "saved" or rect or outer else "none",
+           "monitor": place.get("monitor") if isinstance(place.get("monitor"), int) else 0,
+           "rect": rect}
+    if outer and out["pos"] in ("saved", "max"):
+        out["outer"] = outer
+        if place.get("min"):
+            out["min"] = True
+    return out
 
 
 def make_workspace(name, items=(), ws_id=None):
@@ -2205,6 +2230,11 @@ if IS_WIN:
     _sig(ole32.CoCreateInstance, [ctypes.POINTER(GUID), c_void_p, c_uint32, ctypes.POINTER(GUID),
                                   ctypes.POINTER(c_void_p)], ctypes.c_long)
 
+    def window_is_main(hwnd):
+        """A normal app window (with a title bar or a resizable frame), not a splash screen or a borderless popup."""
+        style = user32.GetWindowLongW(hwnd, -16) & 0xFFFFFFFF  # GWL_STYLE
+        return bool(style & 0x00040000 or style & 0x00C00000 == 0x00C00000)  # WS_THICKFRAME, WS_CAPTION
+
     def window_app_id(hwnd):
         """The app id a window carries (Chromium sets one per browser profile)."""
         store = c_void_p()
@@ -3087,8 +3117,56 @@ if IS_WIN:
             user32.GetWindowRect(hwnd, ctypes.byref(r))
         return r.left, r.top, r.right, r.bottom
 
-    def window_placement_now(hwnd):
-        """Where a window is: (pos, monitor index, visible rect [x, y, w, h])."""
+    class WINDOWPLACEMENT(ctypes.Structure):
+        _fields_ = [("length", c_uint32), ("flags", c_uint32), ("showCmd", c_uint32),
+                    ("ptMinPosition", wintypes.POINT), ("ptMaxPosition", wintypes.POINT),
+                    ("rcNormalPosition", RECT)]
+
+    _sig(user32.GetWindowPlacement, [c_void_p, ctypes.POINTER(WINDOWPLACEMENT)])
+    _sig(user32.SetWindowPlacement, [c_void_p, ctypes.POINTER(WINDOWPLACEMENT)])
+    _sig(user32.MonitorFromRect, [ctypes.POINTER(RECT), c_uint32], c_void_p)
+    try:
+        _sig(user32.SetThreadDpiAwarenessContext, [c_void_p], c_void_p)
+        _HAS_THREAD_DPI = True
+    except AttributeError:  # before Windows 10 1607
+        _HAS_THREAD_DPI = False
+
+    class real_pixels:
+        """The launcher is only system-DPI aware, so Windows scales the coordinates of windows on monitors with
+        another scale (125 % next to 100 %…). Inside this block the thread sees real pixels on every monitor."""
+
+        def __enter__(self):
+            self.old = None
+            if _HAS_THREAD_DPI:
+                try:
+                    self.old = user32.SetThreadDpiAwarenessContext(c_void_p(-4))  # PER_MONITOR_AWARE_V2
+                except OSError:
+                    self.old = None
+            return self
+
+        def __exit__(self, *_exc):
+            if self.old:
+                try:
+                    user32.SetThreadDpiAwarenessContext(c_void_p(self.old))
+                except OSError:
+                    pass
+            return False
+
+    def _work_offset(rect):
+        """Windows stores normal positions in "workspace" coordinates (relative to the work area of the monitor):
+        how far those are from screen coordinates there."""
+        r = RECT(*rect)
+        mi = MONITORINFO(cbSize=ctypes.sizeof(MONITORINFO))
+        if user32.GetMonitorInfoW(user32.MonitorFromRect(ctypes.byref(r), 2), ctypes.byref(mi)):
+            return mi.rcWork.left - mi.rcMonitor.left, mi.rcWork.top - mi.rcMonitor.top
+        return 0, 0
+
+    def _monitor_index(mons, rect):
+        r = RECT(rect[0], rect[1], rect[0] + rect[2], rect[1] + rect[3])
+        hmon = user32.MonitorFromRect(ctypes.byref(r), 2)
+        return next((i for i, m in enumerate(mons) if m[1] == hmon), 0)
+
+    def _window_placement_now(hwnd):
         mons = list_monitors()
         hmon = user32.MonitorFromWindow(hwnd, 2)
         idx = next((i for i, m in enumerate(mons) if m[1] == hmon), 0)
@@ -3099,13 +3177,89 @@ if IS_WIN:
             user32.GetWindowRect(hwnd, ctypes.byref(fr))
         return "saved", idx, [fr.left, fr.top, fr.right - fr.left, fr.bottom - fr.top]
 
+    def window_placement_now(hwnd):
+        """Where a window is: (pos, monitor index, visible rect [x, y, w, h])."""
+        with real_pixels():
+            return _window_placement_now(hwnd)
+
+    def window_place_now(hwnd):
+        """Everything needed to put a window back exactly where it is: its size and position, maximized or not,
+        minimized or not, and (for maximized / minimized windows) the size it has when restored."""
+        with real_pixels():
+            pos, idx, rect = _window_placement_now(hwnd)
+            wp = WINDOWPLACEMENT(length=ctypes.sizeof(WINDOWPLACEMENT))
+            if not user32.GetWindowPlacement(hwnd, ctypes.byref(wp)):
+                return {"pos": pos, "monitor": idx, "rect": rect}
+            iconic = bool(user32.IsIconic(hwnd))
+            if iconic or pos == "max":
+                n = wp.rcNormalPosition
+                outer = [n.left, n.top, n.right - n.left, n.bottom - n.top]
+                if not user32.GetWindowLongW(hwnd, -20) & 0x80:  # not a tool window: workspace coordinates
+                    dx, dy = _work_offset([n.left, n.top, n.right, n.bottom])
+                    outer[0] += dx
+                    outer[1] += dy
+                if iconic:
+                    pos = "max" if wp.flags & 0x2 else "saved"  # WPF_RESTORETOMAXIMIZED
+                    idx, rect = _monitor_index(list_monitors(), outer), None
+            else:  # as it is now (keeps Snap layouts: the "normal" rectangle of a snapped window is the old one)
+                r = RECT()
+                user32.GetWindowRect(hwnd, ctypes.byref(r))
+                outer = [r.left, r.top, r.right - r.left, r.bottom - r.top]
+            place = {"pos": pos, "monitor": idx, "rect": rect, "outer": outer}
+            if iconic:
+                place["min"] = True
+            return place
+
+    def _place_exact(hwnd, place, mons):
+        """Put a window back to a remembered rectangle and state, in one step (no flicker)."""
+        x, y, w, h = place["outer"]
+        # monitor gone (or the layout changed)? Keep the size, centre it on the remembered monitor
+        r = RECT(x, y, x + w, y + h)
+        hmon = user32.MonitorFromRect(ctypes.byref(r), 0)  # MONITOR_DEFAULTTONULL
+        if not hmon:
+            (l, t, rr, b), _h, _main = mons[min(max(int(place.get("monitor") or 0), 0), len(mons) - 1)]
+            w, h = min(w, rr - l), min(h, b - t)
+            x, y = l + (rr - l - w) // 2, t + (b - t - h) // 2
+        dx, dy = (0, 0) if user32.GetWindowLongW(hwnd, -20) & 0x80 else _work_offset([x, y, x + w, y + h])
+        want_max, want_min = place["pos"] == "max", bool(place.get("min"))
+        cur = WINDOWPLACEMENT(length=ctypes.sizeof(WINDOWPLACEMENT))
+        if user32.GetWindowPlacement(hwnd, ctypes.byref(cur)):
+            n = cur.rcNormalPosition
+            same_rect = (n.left, n.top, n.right, n.bottom) == (x - dx, y - dy, x - dx + w, y - dy + h)
+            same_state = (bool(user32.IsIconic(hwnd)) == want_min
+                          and (bool(user32.IsZoomed(hwnd)) == want_max if not want_min else True))
+            if same_state and (same_rect or (not want_min and not want_max and window_outer(hwnd) == [x, y, w, h])):
+                return  # already there
+        wp = WINDOWPLACEMENT(length=ctypes.sizeof(WINDOWPLACEMENT))
+        wp.flags = 0x2 if want_max and want_min else 0  # WPF_RESTORETOMAXIMIZED
+        wp.showCmd = 7 if want_min else 3 if want_max else 4  # SHOWMINNOACTIVE / SHOWMAXIMIZED / SHOWNOACTIVATE
+        wp.ptMinPosition = wintypes.POINT(-1, -1)
+        wp.ptMaxPosition = wintypes.POINT(-1, -1)
+        wp.rcNormalPosition = RECT(x - dx, y - dy, x - dx + w, y - dy + h)
+        user32.SetWindowPlacement(hwnd, ctypes.byref(wp))
+        if not want_min and not want_max:  # a snapped window: its real rectangle, not only its "normal" one
+            if window_outer(hwnd) != [x, y, w, h]:
+                user32.SetWindowPos(hwnd, None, x, y, w, h, 0x0004 | 0x0010)
+
+    def window_outer(hwnd):
+        r = RECT()
+        user32.GetWindowRect(hwnd, ctypes.byref(r))
+        return [r.left, r.top, r.right - r.left, r.bottom - r.top]
+
     def place_window(hwnd, place):
         """Move a window to a position on a monitor (see WS_POSITIONS)."""
+        with real_pixels():
+            _place_window(hwnd, place)
+
+    def _place_window(hwnd, place):
         pos = (place or {}).get("pos") or "none"
         if pos == "none" or not user32.IsWindow(hwnd):
             return
         mons = list_monitors()
         if not mons:
+            return
+        if place.get("outer") and pos in ("saved", "max"):
+            _place_exact(hwnd, place, mons)
             return
         (l, t, r, b), _h, _main = mons[min(max(int(place.get("monitor") or 0), 0), len(mons) - 1)]
         W, H = r - l, b - t
@@ -3342,6 +3496,9 @@ else:
     def window_app_id(hwnd):
         return None
 
+    def window_is_main(hwnd):
+        return True
+
     def window_pid(hwnd):
         return 0
 
@@ -3353,6 +3510,9 @@ else:
 
     def window_placement_now(hwnd):
         return "none", 0, None
+
+    def window_place_now(hwnd):
+        return {"pos": "none", "monitor": 0, "rect": None}
 
     def window_rect(hwnd):
         return 260, 160, 1160, 760
@@ -5967,7 +6127,10 @@ class RestoreDialog(tk.Toplevel):
         for i, it in enumerate(self.items):
             v = tk.BooleanVar(value=True)
             self.vars.append(v)
-            where = {"max": " · maximized"}.get((it.get("place") or {}).get("pos"), "")
+            pl = it.get("place") or {}
+            n = 1 + len(it.get("more") or [])
+            where = (f" · {n} windows" if n > 1 else "") + (" · minimized" if pl.get("min") else
+                                                            " · maximized" if pl.get("pos") == "max" else "")
             tk.Checkbutton(listf, text=f" {it.get('name', '?')}{where}", variable=v, bg=T["bg"], fg=T["fg"],
                            selectcolor=T["field"], activebackground=T["bg"], activeforeground=T["fg"],
                            font=(f, 10), anchor="w", highlightthickness=0, bd=0
@@ -6294,12 +6457,17 @@ class WorkspacesDialog(tk.Toplevel):
             self._sync_place()
             return
         pl["pos"] = pos
+        pl.pop("outer", None)
+        pl.pop("min", None)
         self._changed(i)
 
     def on_mon(self):
         ws, i = self.ws(), self._item_index()
         if ws and i is not None:
-            ws["items"][i]["place"]["monitor"] = max(0, self.mon_cb.current())
+            pl = ws["items"][i]["place"]
+            pl["monitor"] = max(0, self.mon_cb.current())
+            pl.pop("outer", None)
+            pl.pop("min", None)
             self._changed(i)
 
     def use_current(self):
@@ -6311,8 +6479,7 @@ class WorkspacesDialog(tk.Toplevel):
             messagebox.showinfo("Use its current position", f"“{ws['items'][i]['name']}” isn't open. Open it, "
                                 "place its window, then try again.", parent=self)
             return
-        pos, mon, rect = window_placement_now(wins[0])
-        ws["items"][i]["place"] = {"pos": pos, "monitor": mon, "rect": rect}
+        ws["items"][i]["place"] = clean_place(window_place_now(wins[0]))
         self._changed(i)
 
     def open_now(self):
@@ -7962,17 +8129,44 @@ class LauncherApp(tk.Tk):
     def _ws_by_id(self, ws_id):
         return next((w for w in self.workspaces if w["id"] == ws_id), None)
 
-    def ws_entry(self, it):
-        """A workspace entry with how to recognise its windows and which are open now."""
+    def ws_entry(self, it, any_window=False):
+        """A workspace entry with how to recognise its windows and which are open now. any_window: also programs
+        without a key binding (session restore: an app that started with Windows is moved, not started again)."""
         item = ws_item_to_item(it)
         b = None if item["kind"] == "url" else self._binding_for_item(item, -1)
         if b:
             wins = [h for h in self.z_order if binding_matches(b, self.win_ident.get(h, ("", None, None)))]
+        elif any_window and item["kind"] != "url" and IS_WIN:
+            e = {"it": it, "b": None}
+            wins = [h for h in self.z_order if self._ws_window_matches(e, h, self.win_ident.get(h) or self._identify(h))]
         elif item["kind"] == "app" and IS_WIN:
             wins = [h for h in self.z_order if window_app_id(h) == item["app_id"]]
         else:
             wins = []
         return {"it": it, "item": item, "b": b, "wins": wins}
+
+    def _ws_window_matches(self, p, h, ident):
+        """Is this (new) window one of this workspace entry's?"""
+        if p["b"]:
+            return binding_matches(p["b"], ident)
+        exe, aumid, prof = ident
+        exe = (exe or "").lower()
+        it = p["it"]
+        if it.get("win_exe") and exe == it["win_exe"]:
+            return True
+        t = it.get("type")
+        if t == "app":
+            aid = it.get("app_id") or ""
+            if aid and (aid == aumid or aid == window_app_id(h)):
+                return True
+            tail = aid.replace("/", "\\").lower().rsplit("\\", 1)[-1]
+            return tail.endswith(".exe") and os.path.basename(exe) == tail
+        if t == "profile":
+            return bool(prof) and prof == profile_id(it)
+        if t == "file":
+            path = (it.get("path") or "").lower()
+            return path.endswith(".exe") and (exe == path or os.path.basename(exe) == os.path.basename(path))
+        return False
 
     def item_to_ws(self, item):
         """A launcher row as a workspace entry (open windows keep their current position)."""
@@ -7998,8 +8192,7 @@ class LauncherApp(tk.Tk):
             return None
         if kind == "window":
             exe, aumid, prof = self.win_ident.get(item["hwnd"]) or self._identify(item["hwnd"])
-            pos, mon, rect = window_placement_now(item["hwnd"])
-            place = {"pos": pos, "monitor": mon, "rect": rect}
+            place = window_place_now(item["hwnd"])
             if prof:
                 p = next((x for x in self.profiles if profile_id(x) == prof), None)
                 if p:
@@ -8009,9 +8202,10 @@ class LauncherApp(tk.Tk):
             match = self._start_app_for(exe, aumid)
             if match:
                 return clean_ws_item({"type": "app", "name": match["name"], "app_id": match["app_id"],
-                                      "place": place})
+                                      "win_exe": exe, "place": place})
             if aumid:
-                return clean_ws_item({"type": "app", "name": item["name"], "app_id": aumid, "place": place})
+                return clean_ws_item({"type": "app", "name": item["name"], "app_id": aumid, "win_exe": exe,
+                                      "place": place})
             if exe:
                 return clean_ws_item({"type": "file", "name": self._exe_name(exe), "path": exe, "place": place})
         return None
@@ -8094,34 +8288,48 @@ class LauncherApp(tk.Tk):
             # windows that are already open: put them in place and bring them up (first item ends on top)
             for p in reversed(plan):
                 if p["wins"] and IS_WIN:
+                    places = [p["it"]["place"]] + list(p["it"].get("more") or [])
+                    for h, pl in reversed(list(zip(p["wins"], places))):
+                        place_window(h, pl)
                     h = p["wins"][0]
-                    place_window(h, p["it"]["place"])
-                    focus_window(h)
+                    if not p["it"]["place"].get("min"):
+                        focus_window(h)
                     raised += 1
-            # wait for the new windows, then put them in place (twice: some apps move themselves at start)
-            pending = [p for p in launched if p["b"] or p["item"]["kind"] == "app"]
+            # wait for the new windows and put each one in place. Again a few times: many apps (browsers, Office,
+            # Explorer…) move or resize their window themselves while they start, or change size on a monitor
+            # with another scale.
+            slots = {id(p): [p["it"]["place"]] + list(p["it"].get("more") or [])
+                     for p in launched if p["item"]["kind"] != "url"}
+            pending = [p for p in launched if slots.get(id(p))]
             seen, todo = set(before), []
-            deadline = time.monotonic() + 25
+            deadline = time.monotonic() + (60 if ws.get("id") == "session" else 25)
             while IS_WIN and (pending or todo) and time.monotonic() < deadline:
                 time.sleep(0.35)
                 for h, _title in list_open_windows():
-                    if h in seen:
+                    if h in seen or not pending:
+                        continue
+                    if not window_is_main(h):  # a splash screen or a small popup: wait for the real window
                         continue
                     seen.add(h)
                     ident = self._identify(h)
                     for p in pending:
-                        ok = (binding_matches(p["b"], ident) if p["b"]
-                              else window_app_id(h) == p["item"].get("app_id"))
-                        if ok:
-                            pending.remove(p)
-                            if p["it"]["place"]["pos"] != "none":
+                        if self._ws_window_matches(p, h, ident):
+                            place = slots[id(p)].pop(0)
+                            if not slots[id(p)]:
+                                pending.remove(p)
+                            if place["pos"] != "none":
                                 now = time.monotonic()
-                                todo += [(now + 0.4, h, p["it"]["place"]), (now + 1.8, h, p["it"]["place"])]
+                                todo += [(now + d, h, place) for d in (0.3, 1.2, 2.5, 4.5, 8)]
                             break
                 now = time.monotonic()
                 for job in [j for j in todo if j[0] <= now]:
                     todo.remove(job)
                     place_window(job[1], job[2])
+                if not todo and pending and all(p["it"].get("more") for p in pending) \
+                        and all(len(slots[id(p)]) < 1 + len(p["it"]["more"]) for p in pending):
+                    # only the extra windows of apps that are already open are missing: give them a little longer,
+                    # not the whole minute (most apps open one window and keep the rest closed)
+                    deadline = min(deadline, now + 12)
         except Exception:
             log("workspace error:\n" + traceback.format_exc())
         finally:
@@ -8579,7 +8787,7 @@ class LauncherApp(tk.Tk):
 
     # ---- session: reopen your apps after a restart
     def session_items(self):
-        out, seen = [], set()
+        out, seen = [], {}
         for w in self.windows:
             exe = (self.win_ident.get(w["hwnd"]) or ("", None, None))[0] or ""
             if os.path.basename(exe).lower() in SESSION_SKIP_EXES:
@@ -8593,8 +8801,10 @@ class LauncherApp(tk.Tk):
                 continue
             k = session_entry_key(it)
             if k not in seen:
-                seen.add(k)
+                seen[k] = it
                 out.append(it)
+            elif it["place"]["pos"] != "none" and len(seen[k].get("more", [])) < 8:
+                seen[k].setdefault("more", []).append(it["place"])
         return out
 
     def save_session(self):
@@ -8643,7 +8853,7 @@ class LauncherApp(tk.Tk):
 
     def restore_session(self, items):
         ws = {"id": "session", "name": "Last session", "items": list(items)}
-        plan = [self.ws_entry(it) for it in ws["items"]]
+        plan = [self.ws_entry(it, any_window=True) for it in ws["items"]]
         self._set_status(f"Reopening {len(plan)} app{'s' if len(plan) != 1 else ''}…")
         threading.Thread(target=self._run_workspace, args=(ws, plan, True, set(self.titles)), daemon=True).start()
 
